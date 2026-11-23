@@ -47,8 +47,13 @@ const hash = pw => { const s = crypto.randomBytes(16); return `scrypt$${s.toStri
 const check = (pw, st) => { const [, s, h] = st.split('$'); const a = crypto.scryptSync(pw, Buffer.from(s, 'base64'), 64), b = Buffer.from(h, 'base64'); return a.length === b.length && crypto.timingSafeEqual(a, b); };
 const sign = o => { const d = b64u(JSON.stringify({ alg: 'HS256', typ: 'JWT' })) + '.' + b64u(JSON.stringify(o)); return d + '.' + crypto.createHmac('sha256', SECRET).update(d).digest('base64url'); };
 const verify = t => { try { const [h, p, s] = t.split('.'); const e = crypto.createHmac('sha256', SECRET).update(h + '.' + p).digest(); const g = Buffer.from(s, 'base64url'); if (e.length !== g.length || !crypto.timingSafeEqual(e, g)) return null; const o = JSON.parse(Buffer.from(p, 'base64url')); return o.exp > Date.now() / 1000 ? o : null; } catch { return null; } };
-if (E.ADMIN_EMAIL && E.ADMIN_PASSWORD && !db.prepare('SELECT 1 FROM admins WHERE email=?').get(E.ADMIN_EMAIL.toLowerCase()))
-  db.prepare('INSERT INTO admins(email,password_hash,name) VALUES(?,?,?)').run(E.ADMIN_EMAIL.toLowerCase(), hash(E.ADMIN_PASSWORD), 'Otonde Michael');
+if (E.ADMIN_EMAIL && E.ADMIN_PASSWORD) {
+  const em = E.ADMIN_EMAIL.trim().toLowerCase();
+  if (db.prepare('SELECT 1 FROM admins WHERE email=?').get(em))
+    db.prepare('UPDATE admins SET password_hash=? WHERE email=?').run(hash(E.ADMIN_PASSWORD.trim()), em);
+  else
+    db.prepare('INSERT INTO admins(email,password_hash,name) VALUES(?,?,?)').run(em, hash(E.ADMIN_PASSWORD.trim()), 'Otonde Michael');
+}
 
 // ---------- helpers ----------
 const LEVELS = ['Upper primary', 'Junior school', 'Senior school / secondary'];
