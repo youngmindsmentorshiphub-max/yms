@@ -1,0 +1,80 @@
+const $ = (s, r = document) => r.querySelector(s);
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+let mem = null; const tok = { get: () => { try { return sessionStorage.getItem('ym_token') } catch { return mem } }, set: v => { try { v ? sessionStorage.setItem('ym_token', v) : sessionStorage.removeItem('ym_token') } catch { mem = v } } };
+const toast = (m, err) => { const t = $('#toast'); t.textContent = m; t.className = err ? 'err' : ''; t.style.display = 'block'; setTimeout(() => t.style.display = 'none', 3000); };
+async function api(p, method = 'GET', body, raw) {
+  const r = await fetch('/api/' + p, { method, headers: { ...(body && { 'Content-Type': 'application/json' }), ...(tok.get() && { Authorization: 'Bearer ' + tok.get() }) }, body: body && JSON.stringify(body) });
+  if (r.status === 401 && p !== 'auth/login') { tok.set(null); location.reload(); throw new Error('auth'); }
+  if (raw) return r.blob(); const j = await r.json(); if (!r.ok) throw new Error(j.error || 'Error'); return j;
+}
+const fmt = d => d ? new Date(d.replace(' ', 'T') + 'Z').toLocaleString('en-KE') : '';
+const TABS = ['overview', 'applications', 'bookings', 'messages', 'positions', 'settings'];
+const NAMES = { overview: 'Overview', applications: 'Applications', bookings: 'School bookings', messages: 'Messages', positions: 'Positions', settings: 'Settings' };
+const app = $('#app');
+function login() {
+  app.innerHTML = `<div id="login"><form><img src="/assets/logo.jpg" width="64" height="64" alt="" style="border-radius:12px"><h1 style="font-size:2rem">Admin login</h1><p class="lead">Manage applications, school bookings and messages.</p><label for="e">Email</label><input id="e" type="email" required><label for="p">Password</label><input id="p" type="password" required><p class="error" id="err" role="alert"></p><button class="btn">Log in</button><p><a href="/">← Back to website</a></p></form></div>`;
+  $('form').onsubmit = async e => { e.preventDefault(); try { const r = await api('auth/login', 'POST', { email: $('#e').value, password: $('#p').value }); tok.set(r.token); start(); } catch (x) { $('#err').textContent = x.message; } };
+}
+const dlg = html => { let d = $('dialog'); d?.remove(); d = document.createElement('dialog'); d.innerHTML = html; document.body.append(d); d.showModal(); return d; };
+async function start() {
+  let me; try { me = (await api('auth/me')).admin; } catch { return login(); }
+  const sum = await api('admin/summary'), pills = { applications: sum.applications.new, bookings: sum.bookings.new, messages: sum.messages.unread };
+  const tab = TABS.includes(location.hash.slice(1)) ? location.hash.slice(1) : 'overview';
+  app.innerHTML = `<div class="shell"><aside class="side"><p><b>YOUNG MINDS</b> / ADMIN</p><nav>${TABS.map(t => `<a href="#${t}" class="${t === tab ? 'on' : ''}">${NAMES[t]}${pills[t] ? `<span class="pill">${pills[t]}</span>` : ''}</a>`).join('')}</nav><p>${esc(me.name)}</p><button class="btn yel sm" id="out">Log out</button></aside><main class="content" id="c"></main></div>`;
+  $('#out').onclick = () => { tok.set(null); location.reload(); };
+  await VIEWS[tab]($('#c'), sum);
+}
+window.onhashchange = () => tok.get() && start();
+const STAT = { applications: ['new', 'shortlisted', 'interview', 'accepted', 'declined'], bookings: ['new', 'contacted', 'scheduled', 'completed', 'cancelled'] };
+const sel = (a, v) => a.map(x => `<option ${x === v ? 'selected' : ''}>${x}</option>`).join('');
+const VIEWS = {
+  overview: (c, s) => { const max = Math.max(1, ...s.byPosition.map(p => p.applications)); c.innerHTML = `<h1 style="font-size:2rem">Overview</h1><div class="kpis"><div class="card"><b>${s.applications.total}</b>Applications (${s.applications.new} new)</div><div class="card"><b>${s.bookings.total}</b>School bookings (${s.bookings.new} new · ${s.bookings.scheduled} scheduled)</div><div class="card"><b>${s.messages.total}</b>Messages (${s.messages.unread} unread)</div><div class="card"><b>${s.subscribers}</b>Subscribers</div></div><h2>Applications by position</h2><div class="bars">${s.byPosition.map(p => `<div><span style="width:280px">${esc(p.title)}</span><i style="width:${p.applications / max * 300}px"></i>${p.applications}</div>`).join('')}</div><h2>Recent activity</h2><ul>${s.recent.map(r => `<li><span class="badge">${r.type}</span> ${esc(r.title)} · ${fmt(r.created_at)}</li>`).join('')}</ul>`; },
+  applications: async c => {
+    const ps = (await api('admin/positions')).positions; let timer;
+    c.innerHTML = `<h1 style="font-size:2rem">Applications</h1><div class="toolbar"><input id="q" placeholder="Search name, email, course" aria-label="Search"><select id="st" aria-label="Status"><option value="">All statuses</option>${sel(STAT.applications)}</select><select id="po" aria-label="Position"><option value="">All positions</option>${ps.map(p => `<option value="${p.id}">${esc(p.title)}</option>`).join('')}</select><button class="btn sm" id="csv">Export CSV</button></div><div id="t"></div>`;
+    const qs = () => new URLSearchParams({ q: $('#q').value, status: $('#st').value, position: $('#po').value }).toString();
+    const load = async () => { const { applications: a } = await api('admin/applications?' + qs()); $('#t').innerHTML = `<table><tr><th>Applicant</th><th>Position</th><th>Year</th><th>Status</th><th>Received</th></tr>${a.map(r => `<tr data-id="${r.id}" tabindex="0"><td>${esc(r.fullName)}<br><small>${esc(r.email)}</small></td><td>${esc(r.positionTitle)}${r.secondChoiceTitle ? `<br><small>2nd: ${esc(r.secondChoiceTitle)}</small>` : ''}</td><td>${esc(r.yearOfStudy)}</td><td><span class="badge ${r.status}">${r.status}</span></td><td>${fmt(r.createdAt)}</td></tr>`).join('')}</table>`;
+      document.querySelectorAll('tr[data-id]').forEach(tr => { const open = () => detail(a.find(x => x.id == tr.dataset.id), load); tr.onclick = open; tr.onkeydown = e => e.key === 'Enter' && open(); }); };
+    $('#q').oninput = () => { clearTimeout(timer); timer = setTimeout(load, 300); }; $('#st').onchange = $('#po').onchange = load;
+    $('#csv').onclick = async () => { const b = await api('admin/applications.csv?' + qs(), 'GET', null, true); const a = document.createElement('a'); a.href = URL.createObjectURL(b); a.download = 'applications.csv'; a.click(); };
+    load();
+  },
+  bookings: async c => {
+    const { bookings: b } = await api('admin/bookings'); c.innerHTML = `<h1 style="font-size:2rem">School bookings</h1><table><tr><th>School</th><th>Contact</th><th>Format</th><th>Date</th><th>Status</th><th>Received</th></tr>${b.map(r => `<tr data-id="${r.id}" tabindex="0"><td>${esc(r.school_name)}<br><small>${esc(r.county)}</small></td><td>${esc(r.contact_name)}<br><small>${esc(r.contact_role)}</small></td><td>${esc(r.format)}</td><td>${esc(r.preferred_date)}</td><td><span class="badge ${r.status}">${r.status}</span></td><td>${fmt(r.created_at)}</td></tr>`).join('')}</table>`;
+    document.querySelectorAll('tr[data-id]').forEach(tr => { const open = () => bookingDetail(b.find(x => x.id == tr.dataset.id)); tr.onclick = open; tr.onkeydown = e => e.key === 'Enter' && open(); });
+  },
+  messages: async c => {
+    const { messages: m } = await api('admin/messages'); c.innerHTML = `<h1 style="font-size:2rem">Messages</h1>${m.map(r => `<div class="msg ${r.is_read ? '' : 'unread'}"><b>${esc(r.subject)}</b><br><small>${esc(r.name)} · ${esc(r.email)} · ${fmt(r.created_at)}</small><p>${esc(r.message)}</p><a class="btn sm outline" href="mailto:${esc(r.email)}?subject=${encodeURIComponent('Re: ' + r.subject)}">Reply</a> <button class="btn sm outline" data-r="${r.id}" data-v="${r.is_read ? 0 : 1}">Mark ${r.is_read ? 'unread' : 'read'}</button> <button class="btn sm outline" data-d="${r.id}">Delete</button></div>`).join('') || '<p>No messages.</p>'}`;
+    c.onclick = async e => { const t = e.target; if (t.dataset.r) await api('admin/messages/' + t.dataset.r, 'PATCH', { isRead: t.dataset.v === '1' }); else if (t.dataset.d && confirm('Delete this message?')) await api('admin/messages/' + t.dataset.d, 'DELETE'); else return; start(); };
+  },
+  positions: async c => {
+    const { positions: p } = await api('admin/positions'); c.innerHTML = `<h1 style="font-size:2rem">Positions</h1><button class="btn sm" id="add">Add position</button><table><tr><th>Title</th><th>Reports to</th><th>Apps</th><th>Open</th><th></th></tr>${p.map(r => `<tr><td>${esc(r.title)} ${r.isNew ? '<span class="badge">new</span>' : ''}<br><small>${esc(r.summary)}</small></td><td>${esc(r.reportsTo)}</td><td>${r.applicationCount}</td><td><input type="checkbox" data-o="${r.id}" ${r.isOpen ? 'checked' : ''} aria-label="Open ${esc(r.title)}"></td><td><button class="btn sm outline" data-e="${r.id}">Edit</button></td></tr>`).join('')}</table>`;
+    c.onchange = async e => { const t = e.target; if (!t.dataset.o) return; try { await api('admin/positions/' + t.dataset.o, 'PATCH', { isOpen: t.checked }); toast('Saved'); } catch (x) { t.checked = !t.checked; toast(x.message, 1); } };
+    const form = r => { const d = dlg(`<h2>${r ? 'Edit' : 'Add'} position</h2><form><label>Title<input name="title" required value="${esc(r?.title)}"></label><label>Reports to<input name="reportsTo" required value="${esc(r?.reportsTo)}"></label><label>Summary<textarea name="summary" required rows="3">${esc(r?.summary)}</textarea></label><label>Responsibilities (one per line)<textarea name="responsibilities" rows="4">${esc(r?.responsibilities.join('\n'))}</textarea></label><label>Requirements (one per line)<textarea name="requirements" rows="4">${esc(r?.requirements.join('\n'))}</textarea></label><label>Display order<input name="sortOrder" type="number" value="${r?.sortOrder ?? 0}"></label><label class="opt"><input type="checkbox" name="isOpen" ${!r || r.isOpen ? 'checked' : ''}>Open</label><label class="opt"><input type="checkbox" name="isNew" ${r?.isNew ? 'checked' : ''}>New role badge</label><button class="btn">Save</button>${r ? '<button type="button" class="btn outline" id="del">Delete</button>' : ''}</form>`);
+      d.querySelector('form').onsubmit = async e => { e.preventDefault(); const f = new FormData(e.target), b = Object.fromEntries(f); b.isOpen = f.has('isOpen'); b.isNew = f.has('isNew'); try { await api('admin/positions' + (r ? '/' + r.id : ''), r ? 'PATCH' : 'POST', b); d.close(); toast('Saved'); start(); } catch (x) { toast(x.message, 1); } };
+      d.querySelector('#del')?.addEventListener('click', async () => { if (confirm('Delete this position?')) try { await api('admin/positions/' + r.id, 'DELETE'); d.close(); start(); } catch (x) { toast(x.message, 1); } }); };
+    $('#add').onclick = () => form(); c.querySelectorAll('[data-e]').forEach(b => b.onclick = () => form(p.find(x => x.id == b.dataset.e)));
+  },
+  settings: async c => {
+    const s = await api('admin/settings'), { subscribers: subs } = await api('admin/subscribers');
+    c.innerHTML = `<h1 style="font-size:2rem">Settings</h1><form id="s" class="card"><h2>Recruitment &amp; impact</h2><label class="opt"><input type="checkbox" name="open" ${s.applicationsOpen ? 'checked' : ''}>Applications open</label><label>Deadline (empty = rolling; closes at the start of this date)<input type="date" name="deadline" value="${esc(s.applicationsDeadline)}"></label><label>Schools reached<input type="number" min="0" name="schools" value="${s.stats.schools}"></label><label>Learners mentored<input type="number" min="0" name="learners" value="${s.stats.learners}"></label><label>Trained mentors<input type="number" min="0" name="mentors" value="${s.stats.mentors}"></label><p class="hint">Stats appear on the home page when above zero.</p><button class="btn">Save settings</button></form>
+<form id="pw" class="card" style="margin-top:20px"><h2>Change password</h2><label>Current password<input type="password" name="c" required></label><label>New password (min 10)<input type="password" name="n" minlength="10" required></label><button class="btn">Change password</button></form>
+<div class="card" style="margin-top:20px"><h2>Subscribers (${subs.length})</h2><button class="btn sm" id="cp">Copy all emails</button></div>`;
+    $('#s').onsubmit = async e => { e.preventDefault(); const f = new FormData(e.target); try { await api('admin/settings', 'PUT', { applicationsOpen: f.has('open'), applicationsDeadline: f.get('deadline'), stats: { schools: +f.get('schools'), learners: +f.get('learners'), mentors: +f.get('mentors') } }); toast('Settings saved'); } catch (x) { toast(x.message, 1); } };
+    $('#pw').onsubmit = async e => { e.preventDefault(); const f = new FormData(e.target); try { await api('auth/password', 'POST', { currentPassword: f.get('c'), newPassword: f.get('n') }); e.target.reset(); toast('Password changed'); } catch (x) { toast(x.message, 1); } };
+    $('#cp').onclick = async () => { try { await navigator.clipboard.writeText(subs.map(x => x.email).join(', ')); toast('Copied'); } catch { toast('Could not copy', 1); } };
+  }
+};
+function detail(r, reload) {
+  const d = dlg(`<h2>${esc(r.fullName)}</h2><p>${esc(r.positionTitle)}${r.secondChoiceTitle ? ' (2nd: ' + esc(r.secondChoiceTitle) + ')' : ''}<br><a href="mailto:${esc(r.email)}">${esc(r.email)}</a> · <a href="tel:${esc(r.phone)}">${esc(r.phone)}</a><br>${esc(r.course)} · Year ${esc(r.yearOfStudy)}<br>${r.cvLink ? `<a href="${esc(r.cvLink)}" target="_blank" rel="noopener">CV</a> ` : ''}${r.portfolioLink ? `<a href="${esc(r.portfolioLink)}" target="_blank" rel="noopener">Portfolio</a>` : ''}<br><small>Received ${fmt(r.createdAt)}</small></p><div style="background:var(--grey);padding:12px;border-radius:12px;white-space:pre-wrap">${esc(r.motivation)}</div><form><label>Status<select name="status">${sel(STAT.applications, r.status)}</select></label><label>Internal notes<textarea name="adminNotes" rows="4">${esc(r.adminNotes)}</textarea></label><button class="btn">Save</button> <a class="btn outline" href="mailto:${esc(r.email)}?subject=${encodeURIComponent('Your application – Young Minds Mentorship Hub')}">Email applicant</a> <button type="button" class="btn outline" id="del">Delete</button> <button type="button" class="btn outline" id="x">Close</button></form>`);
+  d.querySelector('#x').onclick = () => d.close();
+  d.querySelector('form').onsubmit = async e => { e.preventDefault(); try { await api('admin/applications/' + r.id, 'PATCH', Object.fromEntries(new FormData(e.target))); d.close(); toast('Saved'); reload(); } catch (x) { toast(x.message, 1); } };
+  d.querySelector('#del').onclick = async () => { if (confirm('Delete this application?')) { await api('admin/applications/' + r.id, 'DELETE'); d.close(); reload(); } };
+}
+function bookingDetail(r) {
+  const d = dlg(`<h2>${esc(r.school_name)}</h2><p>${esc(r.county)} · ${esc(r.contact_name)} (${esc(r.contact_role)})<br>${esc(r.email)} · ${esc(r.phone)}<br>Levels: ${esc(r.levels.join(', '))}<br>Format: ${esc(r.format)}<br>Focus: ${esc(r.focus_areas.join(', '))}<br>Learners: ${esc(r.learners)} · Date: ${esc(r.preferred_date)}</p><p style="white-space:pre-wrap">${esc(r.notes)}</p><form><label>Status<select name="status">${sel(STAT.bookings, r.status)}</select></label><label>Internal notes<textarea name="adminNotes" rows="4">${esc(r.admin_notes)}</textarea></label><button class="btn">Save</button> <a class="btn outline" href="mailto:${esc(r.email)}">Email school</a> <button type="button" class="btn outline" id="del">Delete</button> <button type="button" class="btn outline" id="x">Close</button></form>`);
+  d.querySelector('#x').onclick = () => d.close();
+  d.querySelector('form').onsubmit = async e => { e.preventDefault(); try { await api('admin/bookings/' + r.id, 'PATCH', Object.fromEntries(new FormData(e.target))); d.close(); toast('Saved'); start(); } catch (x) { toast(x.message, 1); } };
+  d.querySelector('#del').onclick = async () => { if (confirm('Delete this booking?')) { await api('admin/bookings/' + r.id, 'DELETE'); d.close(); start(); } };
+}
+tok.get() ? start() : login();
